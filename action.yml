@@ -1,0 +1,266 @@
+name: 'Busbar Permissions Audit'
+description: 'Cedar-based security analysis of Salesforce metadata — permissions, sharing, FLS, flows'
+author: 'busbar.agency'
+branding:
+  icon: 'lock'
+  color: 'orange'
+
+inputs:
+  metadata-path:
+    description: 'Directory or MDAPI zip of Salesforce metadata to audit (e.g. force-app/main/default).'
+    required: true
+  package-xml:
+    description: 'Path to a package.xml to scope the audit. Optional.'
+    required: false
+    default: ''
+
+  policies:
+    description: 'Path to a Cedar policy bundle (dir of .cedar files) for custom org rules. Empty = built-in baseline policies.'
+    required: false
+    default: ''
+
+  severity-threshold:
+    description: 'Minimum severity to include. One of: info, low, medium, high, critical.'
+    required: false
+    default: 'medium'
+  fail-on-severity:
+    description: 'Exit non-zero if any finding meets or exceeds this severity. Set to "never" to disable.'
+    required: false
+    default: 'high'
+
+  report-path:
+    description: 'Where to write the findings JSON report.'
+    required: false
+    default: 'security-findings.json'
+  sarif:
+    description: 'Also emit a SARIF report for GitHub Code Scanning.'
+    required: false
+    default: 'true'
+  sarif-path:
+    description: 'Where to write the SARIF report (only used when sarif=true).'
+    required: false
+    default: 'security-findings.sarif'
+
+  upload-sarif:
+    description: 'Upload the SARIF report to GitHub Code Scanning (requires security-events: write).'
+    required: false
+    default: 'true'
+  comment-pr:
+    description: 'Post a findings summary as a PR comment on pull_request events.'
+    required: false
+    default: 'true'
+  upload-artifact:
+    description: 'Upload the JSON report (and SARIF if generated) as a workflow artifact.'
+    required: false
+    default: 'true'
+  artifact-name:
+    description: 'Artifact name when upload-artifact=true.'
+    required: false
+    default: 'security-findings'
+
+  version:
+    description: 'busbar-sf release tag to download (e.g. v0.4.2). "latest" resolves the most recent release.'
+    required: false
+    default: 'latest'
+  binary-repo:
+    description: 'GitHub repo that publishes the busbar-sf binary releases.'
+    required: false
+    default: 'busbar-actions/actions-dist'
+
+outputs:
+  findings-count:
+    description: 'Total findings at or above the severity threshold.'
+    value: ${{ steps.audit.outputs.findings-count }}
+  critical-count:
+    description: 'Number of Critical-severity findings.'
+    value: ${{ steps.audit.outputs.critical-count }}
+  high-count:
+    description: 'Number of High-severity findings.'
+    value: ${{ steps.audit.outputs.high-count }}
+  medium-count:
+    description: 'Number of Medium-severity findings.'
+    value: ${{ steps.audit.outputs.medium-count }}
+  threshold-breached:
+    description: '"true" if any finding met or exceeded fail-on-severity.'
+    value: ${{ steps.audit.outputs.threshold-breached }}
+  report-path:
+    description: 'Path to the JSON findings report.'
+    value: ${{ inputs.report-path }}
+  sarif-path:
+    description: 'Path to the SARIF report (empty if sarif=false).'
+    value: ${{ steps.audit.outputs.sarif-path }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Resolve release tag
+      id: tag
+      shell: bash
+      run: |
+        set -euo pipefail
+        if [[ "${{ inputs.version }}" == "latest" ]]; then
+          tag=$(gh release view --repo "${{ inputs.binary-repo }}" --json tagName -q .tagName)
+        else
+          tag="${{ inputs.version }}"
+        fi
+        echo "tag=$tag" >> "$GITHUB_OUTPUT"
+      env:
+        GH_TOKEN: ${{ github.token }}
+
+    - name: Determine asset name
+      id: asset
+      shell: bash
+      run: |
+        set -euo pipefail
+        os="${{ runner.os }}"
+        arch="${{ runner.arch }}"
+        case "$os-$arch" in
+          Linux-X64)   name="busbar-sf-x86_64-unknown-linux-gnu" ;;
+          Linux-ARM64) name="busbar-sf-aarch64-unknown-linux-gnu" ;;
+          macOS-X64)   name="busbar-sf-x86_64-apple-darwin" ;;
+          macOS-ARM64) name="busbar-sf-aarch64-apple-darwin" ;;
+          Windows-X64) name="busbar-sf-x86_64-pc-windows-msvc.exe" ;;
+          *) echo "::error::Unsupported runner: $os-$arch"; exit 1 ;;
+        esac
+        echo "name=$name" >> "$GITHUB_OUTPUT"
+
+    - name: Download busbar-sf binary
+      shell: bash
+      run: |
+        set -euo pipefail
+        bin_dir="${RUNNER_TEMP}/busbar-sf"
+        mkdir -p "$bin_dir"
+        gh release download "${{ steps.tag.outputs.tag }}" \
+          --repo "${{ inputs.binary-repo }}" \
+          --pattern "${{ steps.asset.outputs.name }}" \
+          --dir "$bin_dir"
+        bin_path="$bin_dir/${{ steps.asset.outputs.name }}"
+        chmod +x "$bin_path"
+        echo "$bin_dir" >> "$GITHUB_PATH"
+        if [[ "$bin_path" != "$bin_dir/busbar-sf" && "$bin_path" != "$bin_dir/busbar-sf.exe" ]]; then
+          ext=""
+          [[ "${{ runner.os }}" == "Windows" ]] && ext=".exe"
+          ln -sf "$bin_path" "$bin_dir/busbar-sf$ext"
+        fi
+      env:
+        GH_TOKEN: ${{ github.token }}
+
+    - name: Run security audit
+      id: audit
+      shell: bash
+      run: |
+        set -euo pipefail
+        args=(security audit
+          --metadata "${{ inputs.metadata-path }}"
+          --severity "${{ inputs.severity-threshold }}"
+          --output "${{ inputs.report-path }}"
+          --format json)
+
+        if [[ -n "${{ inputs.package-xml }}" ]]; then
+          args+=(--package-xml "${{ inputs.package-xml }}")
+        fi
+        if [[ -n "${{ inputs.policies }}" ]]; then
+          args+=(--policies "${{ inputs.policies }}")
+        fi
+        if [[ "${{ inputs.sarif }}" == "true" ]]; then
+          args+=(--sarif "${{ inputs.sarif-path }}")
+        fi
+        if [[ "${{ inputs.fail-on-severity }}" != "never" ]]; then
+          args+=(--fail-on "${{ inputs.fail-on-severity }}")
+        fi
+
+        set +e
+        busbar-sf "${args[@]}"
+        audit_exit=$?
+        set -e
+
+        if [[ -f "${{ inputs.report-path }}" ]]; then
+          total=$(jq 'length' "${{ inputs.report-path }}")
+          crit=$(jq '[.[] | select(.severity == "critical")] | length' "${{ inputs.report-path }}")
+          high=$(jq '[.[] | select(.severity == "high")] | length' "${{ inputs.report-path }}")
+          med=$(jq '[.[] | select(.severity == "medium")] | length' "${{ inputs.report-path }}")
+        else
+          total=0; crit=0; high=0; med=0
+        fi
+
+        echo "findings-count=$total" >> "$GITHUB_OUTPUT"
+        echo "critical-count=$crit" >> "$GITHUB_OUTPUT"
+        echo "high-count=$high"     >> "$GITHUB_OUTPUT"
+        echo "medium-count=$med"    >> "$GITHUB_OUTPUT"
+
+        if [[ "${{ inputs.sarif }}" == "true" ]]; then
+          echo "sarif-path=${{ inputs.sarif-path }}" >> "$GITHUB_OUTPUT"
+        else
+          echo "sarif-path=" >> "$GITHUB_OUTPUT"
+        fi
+
+        if [[ $audit_exit -ne 0 ]]; then
+          echo "threshold-breached=true" >> "$GITHUB_OUTPUT"
+        else
+          echo "threshold-breached=false" >> "$GITHUB_OUTPUT"
+        fi
+        echo "$audit_exit" > "${RUNNER_TEMP}/audit_exit"
+
+    - name: Upload SARIF to Code Scanning
+      if: inputs.sarif == 'true' && inputs.upload-sarif == 'true' && steps.audit.outputs.sarif-path != ''
+      uses: github/codeql-action/upload-sarif@v3
+      with:
+        sarif_file: ${{ steps.audit.outputs.sarif-path }}
+        category: busbar-permissions-audit
+
+    - name: Upload findings artifact
+      if: inputs.upload-artifact == 'true'
+      uses: actions/upload-artifact@v4
+      with:
+        name: ${{ inputs.artifact-name }}
+        path: |
+          ${{ inputs.report-path }}
+          ${{ steps.audit.outputs.sarif-path }}
+        if-no-files-found: ignore
+
+    - name: Post PR comment
+      if: inputs.comment-pr == 'true' && github.event_name == 'pull_request'
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+        REPORT: ${{ inputs.report-path }}
+        TOTAL: ${{ steps.audit.outputs.findings-count }}
+        CRIT: ${{ steps.audit.outputs.critical-count }}
+        HIGH: ${{ steps.audit.outputs.high-count }}
+        MED:  ${{ steps.audit.outputs.medium-count }}
+      run: |
+        set -euo pipefail
+        if [[ "$TOTAL" == "0" ]]; then
+          body=$'### 🔐 busbar permissions-audit\n\nNo security findings at or above the configured severity threshold.'
+        else
+          rows=$(jq -r '
+            group_by(.category)
+            | map({category: .[0].category, count: length,
+                   worst: (map(.severity) | (if any(. == "critical") then "critical"
+                     elif any(. == "high") then "high"
+                     elif any(. == "medium") then "medium"
+                     elif any(. == "low") then "low" else "info" end))})
+            | sort_by(-.count)
+            | .[]
+            | "| \(.category) | \(.worst) | \(.count) |"
+          ' "$REPORT" || true)
+
+          body="### 🔐 busbar permissions-audit
+
+**$TOTAL findings** — Critical: $CRIT · High: $HIGH · Medium: $MED
+
+| Category | Worst | Count |
+|---|---|---:|
+$rows
+
+Full report attached as the \`${{ inputs.artifact-name }}\` workflow artifact."
+        fi
+        gh pr comment "${{ github.event.pull_request.number }}" --body "$body"
+
+    - name: Gate on threshold
+      if: steps.audit.outputs.threshold-breached == 'true'
+      shell: bash
+      run: |
+        set -euo pipefail
+        echo "::error::Security audit threshold breached (fail-on-severity=${{ inputs.fail-on-severity }})."
+        exit "$(cat "${RUNNER_TEMP}/audit_exit")"

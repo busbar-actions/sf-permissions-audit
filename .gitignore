@@ -1,0 +1,4 @@
+.DS_Store
+*.log
+security-findings.json
+security-findings.sarif
