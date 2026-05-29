@@ -59,11 +59,11 @@ inputs:
     default: 'security-findings'
 
   version:
-    description: 'busbar-sf release tag to download (e.g. v0.4.2). "latest" resolves the most recent release.'
+    description: 'sf-permissions-audit release tag to download (e.g. v0.4.2). "latest" resolves the most recent release.'
     required: false
     default: 'latest'
   binary-repo:
-    description: 'GitHub repo that publishes the busbar-sf binary releases.'
+    description: 'GitHub repo that publishes the sf-permissions-audit binary releases.'
     required: false
     default: 'busbar-actions/actions-dist'
 
@@ -115,20 +115,20 @@ runs:
         os="${{ runner.os }}"
         arch="${{ runner.arch }}"
         case "$os-$arch" in
-          Linux-X64)   name="busbar-sf-x86_64-unknown-linux-gnu" ;;
-          Linux-ARM64) name="busbar-sf-aarch64-unknown-linux-gnu" ;;
-          macOS-X64)   name="busbar-sf-x86_64-apple-darwin" ;;
-          macOS-ARM64) name="busbar-sf-aarch64-apple-darwin" ;;
-          Windows-X64) name="busbar-sf-x86_64-pc-windows-msvc.exe" ;;
+          Linux-X64)   name="sf-permissions-audit-x86_64-unknown-linux-gnu" ;;
+          Linux-ARM64) name="sf-permissions-audit-aarch64-unknown-linux-gnu" ;;
+          macOS-X64)   name="sf-permissions-audit-x86_64-apple-darwin" ;;
+          macOS-ARM64) name="sf-permissions-audit-aarch64-apple-darwin" ;;
+          Windows-X64) name="sf-permissions-audit-x86_64-pc-windows-msvc.exe" ;;
           *) echo "::error::Unsupported runner: $os-$arch"; exit 1 ;;
         esac
         echo "name=$name" >> "$GITHUB_OUTPUT"
 
-    - name: Download busbar-sf binary
+    - name: Download sf-permissions-audit binary
       shell: bash
       run: |
         set -euo pipefail
-        bin_dir="${RUNNER_TEMP}/busbar-sf"
+        bin_dir="${RUNNER_TEMP}/sf-permissions-audit"
         mkdir -p "$bin_dir"
         gh release download "${{ steps.tag.outputs.tag }}" \
           --repo "${{ inputs.binary-repo }}" \
@@ -137,10 +137,10 @@ runs:
         bin_path="$bin_dir/${{ steps.asset.outputs.name }}"
         chmod +x "$bin_path"
         echo "$bin_dir" >> "$GITHUB_PATH"
-        if [[ "$bin_path" != "$bin_dir/busbar-sf" && "$bin_path" != "$bin_dir/busbar-sf.exe" ]]; then
+        if [[ "$bin_path" != "$bin_dir/sf-permissions-audit" && "$bin_path" != "$bin_dir/sf-permissions-audit.exe" ]]; then
           ext=""
           [[ "${{ runner.os }}" == "Windows" ]] && ext=".exe"
-          ln -sf "$bin_path" "$bin_dir/busbar-sf$ext"
+          ln -sf "$bin_path" "$bin_dir/sf-permissions-audit$ext"
         fi
       env:
         GH_TOKEN: ${{ github.token }}
@@ -170,7 +170,7 @@ runs:
         fi
 
         set +e
-        busbar-sf "${args[@]}"
+        sf-permissions-audit "${args[@]}"
         audit_exit=$?
         set -e
 
