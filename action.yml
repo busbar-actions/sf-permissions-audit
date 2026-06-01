@@ -150,11 +150,11 @@ runs:
       shell: bash
       run: |
         set -euo pipefail
-        args=(security audit
+        args=(
           --metadata "${{ inputs.metadata-path }}"
           --severity "${{ inputs.severity-threshold }}"
           --output "${{ inputs.report-path }}"
-          --format json)
+        )
 
         if [[ -n "${{ inputs.package-xml }}" ]]; then
           args+=(--package-xml "${{ inputs.package-xml }}")
@@ -231,7 +231,7 @@ runs:
       run: |
         set -euo pipefail
         if [[ "$TOTAL" == "0" ]]; then
-          body=$'### 🔐 busbar permissions-audit\n\nNo security findings at or above the configured severity threshold.'
+          body=$'### Busbar Permissions Audit\n\nNo security findings at or above the configured severity threshold.'
         else
           rows=$(jq -r '
             group_by(.category)
@@ -245,15 +245,16 @@ runs:
             | "| \(.category) | \(.worst) | \(.count) |"
           ' "$REPORT" || true)
 
-          body="### 🔐 busbar permissions-audit
-
-**$TOTAL findings** — Critical: $CRIT · High: $HIGH · Medium: $MED
-
-| Category | Worst | Count |
-|---|---|---:|
-$rows
-
-Full report attached as the \`${{ inputs.artifact-name }}\` workflow artifact."
+          body=$(printf '%s\n' \
+            '### Busbar Permissions Audit' \
+            '' \
+            "**$TOTAL findings** - Critical: $CRIT, High: $HIGH, Medium: $MED" \
+            '' \
+            '| Category | Worst | Count |' \
+            '|---|---|---:|' \
+            "$rows" \
+            '' \
+            "Full report attached as the ${{ inputs.artifact-name }} workflow artifact.")
         fi
         gh pr comment "${{ github.event.pull_request.number }}" --body "$body"
 
