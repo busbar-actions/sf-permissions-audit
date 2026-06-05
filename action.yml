@@ -98,14 +98,14 @@ outputs:
 runs:
   using: 'composite'
   steps:
-    - name: Set up sf-permissions-audit
+    - name: Install the sf-permissions-audit binary from actions-dist
       uses: busbar-actions/setup@main
       with:
         binary: sf-permissions-audit
         version: ${{ inputs.version }}
         binary-repo: ${{ inputs.binary-repo }}
 
-    - name: Run security audit
+    - name: Run the Cedar permissions/sharing/FLS/flow audit over the metadata at ${{ inputs.metadata-path }}
       id: audit
       shell: bash
       env:
@@ -118,16 +118,19 @@ runs:
         INPUT_SARIF: ${{ inputs.sarif }}
         INPUT_SARIF_PATH: ${{ inputs.sarif-path }}
         INPUT_COMMENT_OUTPUT: ${{ runner.temp }}/permissions-audit-comment.md
-      run: sf-permissions-audit
+      run: |
+        set -euo pipefail
+        echo "Auditing metadata at ${INPUT_METADATA_PATH} (severity-threshold='${INPUT_SEVERITY_THRESHOLD}' fail-on='${INPUT_FAIL_ON_SEVERITY}') -> report ${INPUT_REPORT_PATH}"
+        sf-permissions-audit
 
-    - name: Upload SARIF to Code Scanning
+    - name: Upload the permissions-audit SARIF report to GitHub Code Scanning
       if: always() && inputs.sarif == 'true' && inputs.upload-sarif == 'true' && steps.audit.outputs.sarif-path != ''
       uses: github/codeql-action/upload-sarif@v3
       with:
         sarif_file: ${{ steps.audit.outputs.sarif-path }}
         category: busbar-permissions-audit
 
-    - name: Upload findings artifact
+    - name: Upload the permissions-audit findings JSON and SARIF as a workflow artifact
       if: always() && inputs.upload-artifact == 'true'
       uses: actions/upload-artifact@v4
       with:
@@ -135,14 +138,16 @@ runs:
         path: |
           ${{ inputs.report-path }}
           ${{ steps.audit.outputs.sarif-path }}
-        if-no-files-found: ignore
+        if-no-files-found: error
 
-    - name: Post PR comment
-      if: always() && inputs.comment-pr == 'true' && github.event_name == 'pull_request'
+    - name: Post the permissions-audit findings summary as a PR comment
+      if: inputs.comment-pr == 'true' && github.event_name == 'pull_request'
       shell: bash
       env:
         GH_TOKEN: ${{ github.token }}
+        PR_NUMBER: ${{ github.event.pull_request.number }}
       run: |
         set -euo pipefail
-        gh pr comment "${{ github.event.pull_request.number }}" \
-          --body-file "${RUNNER_TEMP}/permissions-audit-comment.md"
+        body_file="${RUNNER_TEMP}/permissions-audit-comment.md"
+        echo "Posting the permissions-audit findings summary from ${body_file} as a comment on PR #${PR_NUMBER}"
+        gh pr comment "$PR_NUMBER" --body-file "$body_file"

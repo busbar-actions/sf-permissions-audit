@@ -1,16 +1,54 @@
+> [!WARNING]
+> **`busbar-actions` is under heavy active development — expect breaking changes.**
+> These repositories are public, but **not ready for use yet** — please don't depend on them.
+> A pilot is starting soon: **[star and watch the busbar-actions organization](https://github.com/busbar-actions)** for the launch of Discussions and the pilot announcement.
+
 # busbar-actions/sf-permissions-audit
 
-Cedar-based security analysis of Salesforce metadata. Surfaces over-privileged permission sets, permissive sharing models, FLS mismatches, flows running without sharing, permission escalation, and missing security controls — with citations to the affected components and suggested remediation.
+Static, Cedar-backed security analysis of Salesforce **metadata** — no live org
+connection required. Surfaces over-privileged permission sets, permissive sharing
+models, FLS mismatches, flows running without sharing, permission escalation, and
+missing security controls — each with the affected components and a suggested
+remediation — as a JSON findings report and an optional SARIF report for GitHub
+Code Scanning.
 
-Built on `sf-metadata-security`: Cedar schema generation for 1,442+ metadata types, security fact extraction from PermissionSet / Profile / SharingRules / Flow XML, entity-graph building, and policy evaluation.
+Because it operates on metadata files (a source-format tree or an MDAPI zip), it
+chains naturally after `sf-metadata-pull` or runs directly on a committed
+`force-app` tree. **No `SF_ACCESS_TOKEN`, OIDC token, or `id-token: write` is
+needed.**
 
-## What it does
+## What the binary does
 
-Wraps `busbar-sf security audit` over a metadata tree (or MDAPI zip). It builds a Cedar entity graph from the metadata facts, evaluates policies (built-in baseline or your own Cedar bundle), and emits each `SecurityIssue` with its severity, category, affected components, and remediation. Operates on **metadata files** — no live org connection required, so it chains naturally after `metadata-pull` or runs on a committed `force-app` tree.
+The `sf-permissions-audit` binary owns all logic and UX:
+
+1. Extracts `MetadataSecurityFacts` from the metadata directory
+   (`UnifiedFactExtractor`) — PermissionSet / Profile / SharingRules / Flow XML.
+2. Runs `sf-metadata-security`'s Cedar-backed analyzer (`SecurityAnalysis`) to
+   produce `SecurityIssue`s.
+3. Filters findings to those at or above `severity-threshold`.
+4. Writes the JSON findings report (and, when `sarif=true`, a SARIF 2.1.0 report
+   mapping `category` → ruleId, `severity` → level, `affected_components` →
+   locations).
+5. Writes a PR-comment-ready markdown body (grouped by category, worst severity +
+   count) for the action to post with `gh pr comment`.
+6. Emits `GITHUB_OUTPUT`, a `$GITHUB_STEP_SUMMARY` job summary, and workflow
+   annotations via the `github-actions-ux` crate.
+7. Exits non-zero when any finding meets or exceeds `fail-on-severity`.
+
+> **Apex-derived findings are dormant.** Categories that require Apex parsing
+> (`InsecureDml`, `InjectionVulnerability`, `ExposedEndpoint`,
+> `ApexBypassesMetadataPermissions`) won't fire until the `sf-apex-analyzer` ↔
+> `typesynth` tree-sitter version conflict is resolved and the `apex` feature is
+> re-enabled in `sf-metadata-security`. Metadata-derived findings (sharing,
+> permission sets, profiles, flows) work today.
 
 ## Finding categories
 
-`SharingBypass`, `OverprivilegedPermissionSet`, `SharingRuleConflict`, `FieldAccessMismatch`, `MissingSecurityControl`, `PermissiveSharingModel`, `MissingAuditTrail`, `FlowRunsWithoutSharing`, `PermissionEscalation`, `InsecureExternalAccess`, `CredentialExposure`, and the Apex-derived `InsecureDml` / `InjectionVulnerability` / `ExposedEndpoint` / `ApexBypassesMetadataPermissions` (see status note below).
+`SharingBypass`, `OverprivilegedPermissionSet`, `SharingRuleConflict`,
+`FieldAccessMismatch`, `MissingSecurityControl`, `PermissiveSharingModel`,
+`MissingAuditTrail`, `FlowRunsWithoutSharing`, `PermissionEscalation`,
+`InsecureExternalAccess`, `CredentialExposure`, plus the Apex-derived categories
+above (see the dormant-Apex note).
 
 Severity scale: `critical` / `high` / `medium` / `low` / `info`.
 
@@ -18,32 +56,60 @@ Severity scale: `critical` / `high` / `medium` / `low` / `info`.
 
 | Input | Required | Default | Description |
 |---|---|---|---|
-| `metadata-path` | yes | — | Directory or MDAPI zip of metadata to audit. |
-| `package-xml` | no | `` | Scope the audit to a `package.xml`. |
-| `policies` | no | `` | Cedar policy bundle (dir of `.cedar` files) for custom org rules. Empty = built-in baseline. |
-| `severity-threshold` | no | `medium` | Drop findings below this severity. |
-| `fail-on-severity` | no | `high` | Fail the workflow if any finding meets or exceeds this. `never` disables. |
-| `report-path` | no | `security-findings.json` | JSON report destination. |
-| `sarif` | no | `true` | Also emit SARIF. |
-| `sarif-path` | no | `security-findings.sarif` | SARIF destination. |
-| `upload-sarif` | no | `true` | Upload SARIF to Code Scanning (needs `security-events: write`). |
-| `comment-pr` | no | `true` | Post summary on pull_request events. |
-| `upload-artifact` | no | `true` | Upload report(s) as a workflow artifact. |
-| `artifact-name` | no | `security-findings` | Artifact name. |
-| `version` | no | `latest` | `busbar-sf` release tag. |
-| `binary-repo` | no | `busbar-actions/actions-dist` | Where to fetch the binary. |
+| `metadata-path` | yes | — | Directory or MDAPI zip of metadata to audit (e.g. `force-app/main/default`). |
+| `package-xml` | no | `` | Path to a `package.xml` to scope the audit. *(Accepted but Cedar cross-validation is not yet wired.)* |
+| `policies` | no | `` | Cedar policy bundle (dir of `.cedar` files) for custom org rules. Empty = built-in baseline. *(Accepted but not yet wired.)* |
+| `severity-threshold` | no | `medium` | Minimum severity to include. One of `info`, `low`, `medium`, `high`, `critical`. |
+| `fail-on-severity` | no | `high` | Exit non-zero if any finding meets or exceeds this severity. `never` disables. |
+| `report-path` | no | `security-findings.json` | JSON findings report destination. |
+| `sarif` | no | `true` | Also emit a SARIF report. |
+| `sarif-path` | no | `security-findings.sarif` | SARIF destination (only used when `sarif=true`). |
+| `upload-sarif` | no | `true` | Upload the SARIF to GitHub Code Scanning (needs `security-events: write`). |
+| `comment-pr` | no | `true` | Post a findings summary as a PR comment on `pull_request` events (needs `pull-requests: write`). |
+| `upload-artifact` | no | `true` | Upload the report(s) as a workflow artifact. |
+| `artifact-name` | no | `security-findings` | Artifact name when `upload-artifact=true`. |
+| `version` | no | `latest` | `sf-permissions-audit` release tag to download (e.g. `v0.4.2`). |
+| `binary-repo` | no | `busbar-actions/actions-dist` | Repo that publishes the `sf-permissions-audit` binary releases. |
 
 ## Outputs
 
 | Output | Description |
 |---|---|
 | `findings-count` | Total findings at or above `severity-threshold`. |
-| `critical-count` / `high-count` / `medium-count` | Counts by severity. |
-| `threshold-breached` | `"true"` if `fail-on-severity` was met. |
-| `report-path` | Path to the JSON report. |
-| `sarif-path` | Path to the SARIF (empty if `sarif=false`). |
+| `critical-count` | Number of Critical-severity findings. |
+| `high-count` | Number of High-severity findings. |
+| `medium-count` | Number of Medium-severity findings. |
+| `threshold-breached` | `"true"` if any finding met or exceeded `fail-on-severity`. |
+| `report-path` | Path to the JSON findings report. |
+| `sarif-path` | Path to the SARIF report (empty if `sarif=false`). |
 
-## Example: audit on PR touching security-relevant metadata
+## Auth / permissions model
+
+This action reads metadata from the checked-out repo only — there is **no
+Salesforce auth and no OIDC**. The permissions it needs are GitHub-native, for
+publishing results:
+
+```yaml
+permissions:
+  contents: read           # checkout
+  security-events: write   # upload-sarif → Code Scanning
+  pull-requests: write     # comment-pr → PR comment
+```
+
+Drop `security-events: write` if you set `upload-sarif: false`, and
+`pull-requests: write` if you set `comment-pr: false`.
+
+## Observability
+
+The binary routes outputs, the job summary, and annotations through the
+`github-actions-ux` `Reporter` (auto-selecting workflow-command output on GitHub
+vs plain output locally). The job summary tallies findings by severity and lists
+the top findings; up to 10 findings are emitted as `::error`/`::warning`/
+`::notice` annotations; the fail-on breach is surfaced as a final error
+annotation. Findings are also persisted to the JSON/SARIF reports and the
+artifact, so results survive regardless of run mode.
+
+## Example: audit on a PR touching security-relevant metadata
 
 ```yaml
 name: Permissions Audit
@@ -92,50 +158,12 @@ jobs:
 
       - uses: busbar-actions/sf-metadata-pull@v1
         with:
-          sf-access-token: ${{ secrets.SF_ACCESS_TOKEN }}
-          sf-instance-url: ${{ secrets.SF_INSTANCE_URL }}
           target: force-app/pulled
           commit: false
 
       - uses: busbar-actions/sf-permissions-audit@v1
         with:
           metadata-path: force-app/pulled
-          policies: .busbar/cedar-policies
+          policies: .busbar/cedar-policies   # accepted; cross-validation not yet wired
           fail-on-severity: critical
 ```
-
-## Dependencies (current status)
-
-This action is fully scaffolded but **not yet runnable end-to-end**. Pieces that need to land:
-
-1. **`busbar-sf security audit` subcommand** — wraps `sf-metadata-security`. Library-only today.
-
-   Expected shape:
-   ```
-   busbar-sf security audit \
-     --metadata <dir-or-zip> \
-     [--package-xml <path>] \
-     [--policies <cedar-bundle-dir>] \
-     [--severity <min>] \
-     [--output <findings.json>] \
-     [--format json|sarif|both] \
-     [--sarif <path>] \
-     [--fail-on <severity>] \
-     [--json]
-   ```
-
-   Pipeline:
-   - Parse the metadata tree/zip via `sf-mdpkg` (`MdPackage`); use `metadata-etl` for XML where needed. All metadata typing via `busbar_sf_types`.
-   - Build the entity graph (`EntityGraphBuilder`) from `MetadataSecurityFacts`.
-   - Evaluate Cedar policies — built-in baseline, or a user bundle via `--policies`.
-   - Emit `SecurityIssue[]` as JSON (existing serde shape: `severity`, `category`, `description`, `affected_components`, `remediation`).
-   - SARIF mapping: `category` → ruleId, `severity` → level (critical/high → error, medium → warning, low/info → note), `affected_components` → locations, `description` + `remediation` → message.
-   - Exit non-zero when `--fail-on <severity>` is met.
-
-2. **Binary publication to `busbar-actions/actions-dist`** — same dependency as the other actions.
-
-### Note: Apex-derived findings are dormant
-
-Categories that require Apex parsing (`InsecureDml`, `InjectionVulnerability`, `ExposedEndpoint`, `ApexBypassesMetadataPermissions`) won't fire until the `sf-apex-analyzer` ↔ `typesynth` tree-sitter version conflict (0.24 vs 0.23) is resolved and the `apex` feature is re-enabled in `sf-dependency-graph` / `sf-metadata-security`. Metadata-derived findings (sharing, permission sets, profiles, flows) work without it.
-
-Once the subcommand and binary publication land, tag this action `v1` and consumers can pin it.
