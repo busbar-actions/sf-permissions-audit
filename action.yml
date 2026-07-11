@@ -57,15 +57,14 @@ inputs:
     description: 'Artifact name when upload-artifact=true.'
     required: false
     default: 'security-findings'
-
   version:
-    description: 'sf-permissions-audit release tag to download (e.g. v0.4.2). "latest" resolves the most recent release.'
+    description: 'Release tag of the sf-permissions-audit binary. Falls back to env.BUSBAR_ACTION_VERSION, then "latest".'
     required: false
-    default: 'latest'
+    default: ''
   binary-repo:
-    description: 'GitHub repo that publishes the sf-permissions-audit binary releases.'
+    description: 'GitHub repo hosting prebuilt binary releases. Falls back to env.BUSBAR_ACTION_REPO, then busbar-actions/actions-dist.'
     required: false
-    default: 'busbar-actions/actions-dist'
+    default: ''
 
 outputs:
   findings-count:
@@ -102,8 +101,8 @@ runs:
       uses: busbar-actions/setup@main
       with:
         binary: sf-permissions-audit
-        version: ${{ inputs.version }}
-        binary-repo: ${{ inputs.binary-repo }}
+        version: ${{ inputs.version || env.BUSBAR_ACTION_VERSION || 'latest' }}
+        binary-repo: ${{ inputs.binary-repo || env.BUSBAR_ACTION_REPO || 'busbar-actions/actions-dist' }}
 
     - name: Run the Cedar permissions/sharing/FLS/flow audit over the metadata at ${{ inputs.metadata-path }}
       id: audit
